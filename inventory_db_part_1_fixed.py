@@ -57,11 +57,21 @@ class DatabaseManager:
         cursor.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
         self.connection.commit()
         
-    def search_inventory(self, search_term):
+    def search_inventory(self, search_term, search_field):
         cursor = self.connection.cursor()
-        query = "SELECT * FROM inventory WHERE item_name LIKE ? OR description LIKE ?"
-        cursor.execute(query, ('%' + search_term + '%', '%' + search_term + '%'))
+        # Dynamically build the query based on the search field
+        if search_field == "Item Name":
+            query = "SELECT * FROM inventory WHERE LOWER(name) LIKE ?"
+        elif search_field == "Description":
+            query = "SELECT * FROM inventory WHERE LOWER(description) LIKE ?"
+        elif search_field == "Quantity":
+            query = "SELECT * FROM inventory WHERE quantity = ?"
+        elif search_field == "Unit Price":
+            query = "SELECT * FROM inventory WHERE unit_price = ?"
+        # Execute the query
+        cursor.execute(query, ('%' + search_term + '%',) if search_field in ["Item Name", "Description"] else (search_term,))
         return cursor.fetchall()
+
     def get_paginated_inventory(self, page, items_per_page):
         offset = (page - 1) * items_per_page
         cursor = self.connection.cursor()
@@ -74,6 +84,11 @@ class DatabaseManager:
         query = "SELECT COUNT(*) FROM inventory"
         cursor.execute(query)
         return cursor.fetchone()[0]
+    def sort_inventory(self, field, reverse):
+        cursor = self.connection.cursor()
+        query = f"SELECT * FROM inventory ORDER BY {field} {'DESC' if reverse else 'ASC'}"
+        cursor.execute(query)
+        return cursor.fetchall()
 
 
 class InventoryApp:
@@ -123,24 +138,35 @@ class InventoryApp:
 
         self.delete_button = tk.Button(self.root, text="Delete Item", command=self.delete_item)
         self.delete_button.grid(row=6, column=0, columnspan=2)
-
-            # Search Field
-        self.search_label = tk.Label(self.root, text="Search:")
-        self.search_label.grid(row=7, column=0)
-        self.search_entry = tk.Entry(self.root)
-        self.search_entry.grid(row=7, column=1)
-        self.search_button = tk.Button(self.root, text="Search", command=self.search_items)
-        self.search_button.grid(row=7, column=2)
-        
-        
         
         # Reset Button
         self.reset_button = tk.Button(self.root, text="Reset", command=self.reset_inventory)
         self.reset_button.grid(row=6, column=3)
+        # Search Field
+       # Search criteria dropdown
+        self.search_label = tk.Label(self.root, text="Search By:")
+        self.search_label.grid(row=7, column=0)
+        self.search_criteria = tk.StringVar()
+        self.search_criteria.set("Item Name")  # Default search by item name
+        self.search_dropdown = ttk.Combobox(self.root, textvariable=self.search_criteria)
+        self.search_dropdown['values'] = ("Item Name", "Description", "Quantity", "Unit Price")
+        self.search_dropdown.grid(row=7, column=1)
+
+        # Search field
+        self.search_label = tk.Label(self.root, text="Search:")
+        self.search_label.grid(row=8, column=0)
+        self.search_entry = tk.Entry(self.root)
+        self.search_entry.grid(row=8, column=1)
+        self.search_button = tk.Button(self.root, text="Search", command=self.search_inventory)
+        self.search_button.grid(row=8, column=2)
+
+        
+        
+        
         
         # Export to CSV Button
         self.export_button = tk.Button(self.root, text="Export to CSV", command=self.export_to_csv)
-        self.export_button.grid(row=9, column=0, columnspan=2)
+        self.export_button.grid(row=10, column=3, columnspan=2)
         
         # Pagination Controls
         self.prev_button = tk.Button(self.root, text="Previous", command=self.prev_page)
@@ -161,24 +187,39 @@ class InventoryApp:
 
         # Inventory Display
         self.inventory_tree = ttk.Treeview(self.root, columns=("ID", "Name", "Description", "Quantity", "Unit Price", "Total Price", "Date Added"), show="headings")
-        self.inventory_tree.grid(row=8, column=0, columnspan=4)
-        self.inventory_tree.heading("ID", text="ID", command=lambda: self.sort_inventory("ID"))
-        self.inventory_tree.heading("Name", text="Item Name", command=lambda: self.sort_inventory("Name"))
-        self.inventory_tree.heading("Description", text="Description", command=lambda: self.sort_inventory("Description"))
-        self.inventory_tree.heading("Quantity", text="Quantity", command=lambda: self.sort_inventory("Quantity"))
-        self.inventory_tree.heading("Unit Price", text="Unit Price", command=lambda: self.sort_inventory("Unit Price"))
-        self.inventory_tree.heading("Total Price", text="Total Price", command=lambda: self.sort_inventory("Total Price"))
-        self.inventory_tree.heading("Date Added", text="Date Added", command=lambda: self.sort_inventory("Date Added"))
+        self.inventory_tree.grid(row=9, column=0, columnspan=4)
+
+        # Correctly reference the Treeview column names when setting up the headings
+        self.inventory_tree.heading("ID", text="ID", command=lambda: self.sort_inventory("ID", False))
+        self.inventory_tree.heading("Name", text="Item Name", command=lambda: self.sort_inventory("Name", False))
+        self.inventory_tree.heading("Description", text="Description", command=lambda: self.sort_inventory("Description", False))
+        self.inventory_tree.heading("Quantity", text="Quantity", command=lambda: self.sort_inventory("Quantity", False))
+        self.inventory_tree.heading("Unit Price", text="Unit Price", command=lambda: self.sort_inventory("Unit Price", False))
+        self.inventory_tree.heading("Total Price", text="Total Price")  # No sorting for total price
+        self.inventory_tree.heading("Date Added", text="Date Added", command=lambda: self.sort_inventory("Date Added", False))
+
+
         self.inventory_tree.bind("<ButtonRelease-1>", self.select_item)
         self.load_inventory()
 
-    def search_items(self):
-        search_term = self.search_entry.get()
-        if search_term:
-            search_results = self.db_manager.search_inventory(search_term)
-            self.load_search_results(search_results)
-        else:
-            messagebox.showerror("Error", "Please enter a search term.")
+    def search_inventory(self):
+        search_term = self.search_entry.get().lower()
+        search_field = self.search_criteria.get()
+
+        if not search_term:
+            messagebox.showerror("Invalid Search", "Please enter a search term.")
+            return
+
+        # Clear the treeview before showing search results
+        for row in self.inventory_tree.get_children():
+            self.inventory_tree.delete(row)
+
+        # Get search results based on the selected field
+        results = self.db_manager.search_inventory(search_term, search_field)
+
+        for row in results:
+            self.inventory_tree.insert("", tk.END, values=row)
+
 
     def load_search_results(self, results):
         for row in self.inventory_tree.get_children():
@@ -282,21 +323,36 @@ class InventoryApp:
         self.update_pagination_label()
 
 
-    def sort_inventory(self, column):
-        data = self.db_manager.get_inventory()
+    def sort_inventory(self, field, reverse):
+        # Mapping Treeview column names to actual database field names
+        field_mapping = {
+            "ID": "id",
+            "Name": "item_name",
+            "Description": "description",
+            "Quantity": "quantity",
+            "Unit Price": "unit_price",
+            "Total Price": "total_price",
+            "Date Added": "date_added"
+        }
+        
+        # Map the Treeview field to the corresponding database field
+        db_field = field_mapping.get(field)
+    
+        # Clear current Treeview data
+        for row in self.inventory_tree.get_children():
+            self.inventory_tree.delete(row)
+    
+        # Get sorted data from database using the mapped field
+        sorted_data = self.db_manager.sort_inventory(db_field, reverse)
+    
+        # Insert sorted data back into the Treeview
+        for row in sorted_data:
+            self.inventory_tree.insert("", tk.END, values=row)
+    
+        # Reverse the sort order for the next click
+        self.inventory_tree.heading(field, command=lambda: self.sort_inventory(field, not reverse))
 
-        # Sort by column
-        if column == "Name":
-            data.sort(key=lambda x: x[1].lower())  # Sort by item name
-        elif column == "Quantity":
-            data.sort(key=lambda x: x[3], reverse=False)  # Sort by quantity
-        elif column == "Unit Price":
-            data.sort(key=lambda x: x[4], reverse=False)  # Sort by unit price
-        elif column == "Total Price":
-            data.sort(key=lambda x: x[5], reverse=False)  # Sort by total price
-        elif column == "Date Added":
-            data.sort(key=lambda x: datetime.strptime(x[6], '%Y-%m-%d'))  # Sort by date
-        self.load_search_results(data)
+
     def clear_fields(self):
         self.item_name_entry.delete(0, tk.END)
         self.description_entry.delete(0, tk.END)
